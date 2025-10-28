@@ -41,6 +41,14 @@ class InitialProfile:
         if self.boundary_conditions == 'periodic':
             # Simple periodic extension by one period
             self.profile += self.Gaussian(grid + 1, x0, sigma) + self.Gaussian(grid - 1, x0, sigma)
+        elif self.boundary_conditions == 'dirichlet':
+            # Dirichlet BCs: profile goes to zero at boundaries
+            self.profile[0] = 0
+            self.profile[-1] = 0
+        elif self.boundary_conditions == 'neumann':
+            # Neumann BCs: zero gradient at boundaries
+            self.profile[0] = self.profile[1]
+            self.profile[-1] = self.profile[-2]
 
     def Gaussian(self, x, mu, sigma):
         return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
@@ -67,6 +75,8 @@ class InitialProfile:
         plt.ylabel('Normalized Speed')
         plt.title(f'Initial Profile: {self.profile_type}')
         plt.grid()
+        plt.xlim(0, L)
+        plt.ylim(0, numax*1.1)
         if filename:
             plt.savefig(filename, dpi=150, bbox_inches='tight')
             plt.close()
@@ -102,6 +112,10 @@ class TransportEquation1D:
         self.Ccond = Ccond
         self.profile = initial_profile
         self.grid = initial_profile.grid
+        if self.profile.boundary_conditions == 'periodic':
+            self.du = self.du_LaxFriedrich
+        else:
+            self.du = self.du_LaxFriedrich
 
     def determine_time_step(self):
         """
@@ -113,15 +127,14 @@ class TransportEquation1D:
         dt = self.Ccond * dxphys / self.a0 # a0 also in physical units
         return dt
 
-    def du_old(self, u, dx, dt):
+    def du_cent(self, u, dx, dt):
         """
         Implementation using central difference (not stable for advection equation).
         """
-        dudx = np.zeros(np.shape(u)[0] - 2)
         dudx = (u[2:] - u[:-2]) / (2*dx)
         return -dt * self.na0 * dudx
 
-    def du(self, u, dx, dt):
+    def du_upwind(self, u, dx, dt):
         """
         Implementation using upwind scheme. This is stable, but why? The information used to update u[i] only comes from u[i] and u[i-1], meaning along the direction of propagation. 
         This avoids introducing spurious oscillations that can occur when using central differences, which use information from both sides of the point being updated.
@@ -129,8 +142,16 @@ class TransportEquation1D:
         C = self.na0 * dt / dx
         dudx = u[1:-1] - u[:-2]  # upwind
         return -C * dudx
+    
+    def du_LaxFriedrich(self, u, dx, dt):
+        """
+        Implementation using Lax-Friedrichs scheme.
+        """
+        C = self.na0 * dt / dx
+        dudx = (u[2:] - u[:-2]) / 2
+        return -C * dudx + 0.5 * (u[2:] - 2*u[1:-1] + u[:-2])
 
-    def run_simulation(self, tmax, dtplot=100):
+    def run_simulation(self, tmax, dtplot=100, aniname = 'animation.gif'):
         """
         Runs the advection simulation and saves an animation if requested.
         """
@@ -148,6 +169,12 @@ class TransportEquation1D:
             if self.profile.boundary_conditions == 'periodic':
                 u[0] = u[-2]
                 u[-1] = u[1]
+            elif self.profile.boundary_conditions == 'dirichlet':
+                u[0] = 0
+                u[-1] = 0
+            elif self.profile.boundary_conditions == 'neumann':
+                u[0] = u[1]
+                u[-1] = u[-2]
 
             if n%plotevery == 0:
                 self.profile.set_profile(u)
@@ -166,7 +193,7 @@ class TransportEquation1D:
             return [im]
         
         ani = FuncAnimation(fig, update, frames=len(plot_files), blit=True)
-        ani.save('advection_simulation.gif', writer='imagemagick', fps=5)
+        ani.save(aniname, writer='imagemagick', fps=20)
 
         # delete temporary plot files
         for file in plot_files:
@@ -185,4 +212,24 @@ if __name__ == "__main__":
     initial_profile.plot_profile(filename='initial_profile.png')
 
     simulator = TransportEquation1D(a0, L, nx, Ccond, initial_profile)
-    simulator.run_simulation(tmax=ttravel, dtplot=10000)
+    simulator.run_simulation(tmax=ttravel, dtplot=6000, aniname='periodic_advection_animation.gif')
+
+    # dirichlet BCs example
+    boundary_conditions = 'dirichlet'
+    initial_profile_dirichlet = InitialProfile(profile_type='gaussian', boundary_conditions=boundary_conditions)
+    initial_profile_dirichlet.set_profile_parameters(grid=np.linspace(0, 1, nx), x0=0.1, sigma=nsigma)
+    initial_profile_dirichlet.plot_profile(filename='initial_profile_dirichlet.png')
+
+    simulator_dirichlet = TransportEquation1D(a0, L, nx, 0.5, initial_profile_dirichlet)
+    simulator_dirichlet.run_simulation(tmax=ttravel*1.5, dtplot=6000, aniname='dirichlet_advection_animation.gif')
+
+    # neumann BCs example
+    boundary_conditions = 'neumann'
+    initial_profile_neumann = InitialProfile(profile_type='gaussian', boundary_conditions=boundary_conditions)
+    initial_profile_neumann.set_profile_parameters(grid=np.linspace(0, 1, nx), x0=0.1, sigma=nsigma)
+    initial_profile_neumann.plot_profile(filename='initial_profile_neumann.png')
+    
+    simulator_neumann = TransportEquation1D(a0, L, nx, 0.5, initial_profile_neumann)
+    simulator_neumann.run_simulation(tmax=ttravel*1.5, dtplot=6000, aniname='neumann_advection_animation.gif')
+
+
