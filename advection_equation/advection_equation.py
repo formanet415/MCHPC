@@ -113,9 +113,9 @@ class TransportEquation1D:
         self.profile = initial_profile
         self.grid = initial_profile.grid
         if self.profile.boundary_conditions == 'periodic':
-            self.du = self.du_LaxFriedrich
+            self.du = self.du_LaxWendroff
         else:
-            self.du = self.du_LaxFriedrich
+            self.du = self.du_LaxWendroff
 
     def determine_time_step(self):
         """
@@ -150,6 +150,19 @@ class TransportEquation1D:
         C = self.na0 * dt / dx
         dudx = (u[2:] - u[:-2]) / 2
         return -C * dudx + 0.5 * (u[2:] - 2*u[1:-1] + u[:-2])
+    
+    def du_LaxWendroff(self, u, dx, dt):
+        """
+        Implementation using Lax-Wendroff scheme.
+        """
+        C = self.na0 * dt / dx
+
+        # predictor: compute u at half time step
+        u_half = 0.5 * (u[1:] + u[:-1]) - 0.5 * C * (u[1:] - u[:-1])
+
+        # corrector: compute du using u_half
+        return -C*(u_half[1:] - u_half[:-1]) # the size matches u[1:-1]
+
 
     def run_simulation(self, tmax, dtplot=100, aniname = 'animation.gif'):
         """
