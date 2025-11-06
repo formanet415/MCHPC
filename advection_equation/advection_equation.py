@@ -26,6 +26,7 @@ class InitialProfile:
     def __init__(self, profile_type='gaussian', boundary_conditions='periodic'):
         self.profile_type = profile_type
         self.boundary_conditions = boundary_conditions
+        self.usedscheme = 'unknown'
 
     def set_profile_parameters(self, **kwargs):
         if self.profile_type == 'gaussian':
@@ -73,7 +74,7 @@ class InitialProfile:
         plt.plot(self.x_phys, self.u_phys)
         plt.xlabel('Distance (m)')
         plt.ylabel('Normalized Speed')
-        plt.title(f'Initial Profile: {self.profile_type}')
+        plt.title(f'Initial Profile: {self.profile_type}, BCs: {self.boundary_conditions}, Scheme: {self.usedscheme}')
         plt.grid()
         plt.xlim(0, L)
         plt.ylim(0, numax*1.1)
@@ -104,7 +105,7 @@ class TransportEquation1D:
     """
     1D advection equation solver using an explicit Euler scheme.
     """
-    def __init__(self, a0, L, Nx, Ccond, initial_profile):
+    def __init__(self, a0, L, Nx, Ccond, initial_profile, scheme = "LF", limiter = None):
         self.a0 = a0
         self.L = L
         self.na0 = a0 / L          # Normalized velocity (1/s)
@@ -112,10 +113,20 @@ class TransportEquation1D:
         self.Ccond = Ccond
         self.profile = initial_profile
         self.grid = initial_profile.grid
-        if self.profile.boundary_conditions == 'periodic':
-            self.du = self.du_LaxWendroff
+        if limiter:
+            duindex = 1 # use slope-limited version
         else:
-            self.du = self.du_LaxWendroff
+            duindex = 0 # use basic version
+        if scheme == "cent":
+            self.du = [self.du_cent, None][duindex]
+        elif scheme == "upwind":
+            self.du = [self.du_upwind, self.du_upwind_limited][duindex]
+        elif scheme == "LF":
+            self.du = [self.du_LaxFriedrich, None][duindex]
+        elif scheme == "LW":
+            self.du = [self.du_LaxWendroff, None][duindex]
+        self.profile.usedscheme = scheme
+        self.limiter = limiter
 
     def determine_time_step(self):
         """
@@ -163,6 +174,75 @@ class TransportEquation1D:
         # corrector: compute du using u_half
         return -C*(u_half[1:] - u_half[:-1]) # the size matches u[1:-1]
 
+    def compute_slope(self, u, limiter='minmod'):
+        """
+        Computes the slope using a slope limiter for higher-order schemes.
+        """
+        duminus = u[1:-1] - u[:-2] # left difference
+        duplus = u[2:] - u[1:-1]  # right difference
+        if limiter == 'minmod':
+            slope = self.minmod(duminus, duplus)
+        elif limiter == 'MC':
+            slope = self.MC(duminus, duplus)
+        elif limiter == 'VanLeer':
+            slope = self.VanLeer(duminus, duplus)
+        elif limiter == 'Koren':
+            slope = self.Koren(u[:-3], u[1:-2], u[2:-1])
+        else:
+            raise ValueError(f"Unknown limiter: {limiter}")
+        
+        # check slope shape, should be lower by 2 than u 
+        if slope.shape[0] != u[1:-1].shape[0]:
+            print("ERROR: slope shape mismatch")
+            print(f"slope shape: {slope.shape}, expected: {u[1:-1].shape}")
+
+        return np.append(0, np.append(slope, 0))  # pad with zeros at boundaries to match u size
+
+    def minmod(self, a, b):
+        """
+        Minmod slope limiter.
+        """
+        return np.where(a*b > 0, np.sign(a)*np.minimum(np.abs(a), np.abs(b)), 0.0)
+    
+    def MC(self, a, b):
+        """
+        Monotonized Central slope limiter.
+        """
+        return np.where(a*b > 0, np.sign(a) * np.minimum( np.minimum(2* np.abs(a), 2* np.abs(b)), 0.5* np.abs(a + b) ), 0.0)
+    
+    def VanLeer(self, a, b):
+        """
+        Van Leer slope limiter.
+        """
+        return np.where(a*b > 0, (2*a*b) / ( a + b +1e-12), 0.0)
+
+    def Koren(self, u_minus, u_center, u_plus):
+        """
+        Koren slope limiter.
+        """
+        r = ( u_center - u_minus ) / ( u_plus - u_center +1e-12)
+        phi = min (2* min (r ,1) , (1+2* r ) /3)
+        return phi *( u_plus - u_center )
+    
+    def du_upwind_limited(self, u, uL, uR, dx, dt):
+        """
+        Upwind scheme with slope limiter.
+        """
+        flux = np.zeros_like(u)
+        flux[1:-1] = self.na0 * (uL[1:-1] if self.na0 > 0 else uR[1:-1]) # this choice depends on the sign of a0, which is the direction of propagation
+        return -dt/dx * (flux[2:] - flux[1:-1])
+
+    
+    def advection_step(self, u, dx, dt, limiter=None):
+        if not limiter:
+            return self.du(u, dx, dt)
+        # if limiter is defined, we calculate the slope.
+        
+        slope = self.compute_slope(u, limiter=limiter)
+        uL = u - 0.5 * slope
+        uR = u + 0.5 * slope
+
+        return self.du(u, uL, uR, dx, dt)
 
     def run_simulation(self, tmax, dtplot=100, aniname = 'animation.gif'):
         """
@@ -176,7 +256,7 @@ class TransportEquation1D:
 
 
         for n in range(nsteps):
-            du = self.du(u, dx, dt)
+            du = self.advection_step(u, dx, dt, self.limiter)
             u[1:-1] += du
 
             if self.profile.boundary_conditions == 'periodic':
@@ -218,31 +298,27 @@ class TransportEquation1D:
 if __name__ == "__main__":
     nx = 1000
     Ccond = 0.5
-    boundary_conditions = 'periodic'
+    bcs = ['periodic', 'dirichlet', 'neumann']
+    schemes = ['cent', 'upwind', 'LF', 'LW']
+    limiters = [None, 'minmod', 'MC', 'VanLeer', 'Koren']
 
-    initial_profile = InitialProfile(profile_type='gaussian', boundary_conditions=boundary_conditions)
-    initial_profile.set_profile_parameters(grid=np.linspace(0, 1, nx), x0=0.1, sigma=nsigma)
-    initial_profile.plot_profile(filename='initial_profile.png')
+    for bc in bcs:
+        for scheme in schemes:
+                for limiter in limiters:
+                    # Use a copy of the initial profile for each scheme
+                    sim_profile = InitialProfile(profile_type='gaussian', boundary_conditions=bc)
+                    sim_profile.set_profile_parameters(grid=np.linspace(0, 1, nx), x0=0.1, sigma=nsigma)
+                    sim_profile.usedscheme = scheme  # Set scheme for title
 
-    simulator = TransportEquation1D(a0, L, nx, Ccond, initial_profile)
-    simulator.run_simulation(tmax=ttravel, dtplot=6000, aniname='periodic_advection_animation.gif')
-
-    # dirichlet BCs example
-    boundary_conditions = 'dirichlet'
-    initial_profile_dirichlet = InitialProfile(profile_type='gaussian', boundary_conditions=boundary_conditions)
-    initial_profile_dirichlet.set_profile_parameters(grid=np.linspace(0, 1, nx), x0=0.1, sigma=nsigma)
-    initial_profile_dirichlet.plot_profile(filename='initial_profile_dirichlet.png')
-
-    simulator_dirichlet = TransportEquation1D(a0, L, nx, 0.5, initial_profile_dirichlet)
-    simulator_dirichlet.run_simulation(tmax=ttravel*1.5, dtplot=6000, aniname='dirichlet_advection_animation.gif')
-
-    # neumann BCs example
-    boundary_conditions = 'neumann'
-    initial_profile_neumann = InitialProfile(profile_type='gaussian', boundary_conditions=boundary_conditions)
-    initial_profile_neumann.set_profile_parameters(grid=np.linspace(0, 1, nx), x0=0.1, sigma=nsigma)
-    initial_profile_neumann.plot_profile(filename='initial_profile_neumann.png')
-    
-    simulator_neumann = TransportEquation1D(a0, L, nx, 0.5, initial_profile_neumann)
-    simulator_neumann.run_simulation(tmax=ttravel*1.5, dtplot=6000, aniname='neumann_advection_animation.gif')
-
-
+                    tmax = ttravel if bc == 'periodic' else ttravel * 1.5
+                    simulator = TransportEquation1D(a0, L, nx, Ccond, sim_profile, scheme=scheme, limiter=limiter)
+                    #if not limiter:
+                    #    continue
+                    #if limiter=='minmod':
+                    #    continue
+                    
+                    if simulator.du:
+                        print(f"Running simulation: BC={bc}, Scheme={scheme}, Limiter={limiter}")
+                        simulator.run_simulation(tmax=tmax, dtplot=6000, aniname=f'{bc}_{scheme}_{limiter if limiter else "no_limiter"}_advection_animation.gif')
+                    else:
+                        print(f"Skipping combination: BC={bc}, Scheme={scheme}, Limiter={limiter} (not implemented)")
