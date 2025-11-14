@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-# ... (All helper functions from prim_to_cons to get_W_and_flux remain the same) ...
 # W is a vector of primitive variables: [rho, u, v, P]
 # u and v are velocity components in x and y directions
 def prim_to_cons(W, gamma):
@@ -212,10 +211,11 @@ class Godunov2D:
         U[:, :, -1] = U[:, :, -2]
         return U
    
-    def get_rhs(self, U_in):
+    def get_godunov_update(self, U_in):
         """
-        Calculates the Right-Hand-Side (RHS) of the finite-volume update:
-        RHS = - ( (F_i+1/2 - F_i-1/2)/dx + (G_j+1/2 - G_j-1/2)/dy )
+        Godunov update:
+        Calculates the fluxes for the finite-volume update:
+        - ( (F_i+1/2 - F_i-1/2)/dx + (G_j+1/2 - G_j-1/2)/dy )
         """
         # Create a copy to apply BCs without modifying the original
         U = U_in.copy()
@@ -224,49 +224,49 @@ class Godunov2D:
         # Convert to primitive variables (W now includes ghost cells)
         W = cons_to_prim(U, self.gamma)
 
-        # --- x-direction fluxes ---
+        # x-direction fluxes
         WLx, WRx = reconstruct(W, idim=0)
         ULx = prim_to_cons(WLx, self.gamma)
         URx = prim_to_cons(WRx, self.gamma)
         Fx = hll_flux(ULx, URx, idir=0, gamma=self.gamma)
         div_Fx = Fx - np.roll(Fx, 1, axis=1)  # This is (F_i+1/2 - F_i-1/2)
 
-        # --- y-direction fluxes ---
+        # y-direction fluxes
         WLy, WRy = reconstruct(W, idim=1)
         ULy = prim_to_cons(WLy, self.gamma)
         URy = prim_to_cons(WRy, self.gamma)
         Fy = hll_flux(ULy, URy, idir=1, gamma=self.gamma)
         div_Fy = Fy - np.roll(Fy, 1, axis=2)  # This is (G_j+1/2 - G_j-1/2)
         
-        # --- Total RHS ---
-        rhs = - (div_Fx / self.dx + div_Fy / self.dy)
+        # Total godunov updtate
+        godunovupdt = - (div_Fx / self.dx + div_Fy / self.dy)
         
-        return rhs
+        return godunovupdt
 
     def advance(self, dt):
         """
         Advances the solution by dt using a 2-stage Runge-Kutta (MOL)
         This is equivalent to the MUSCL-Hancock predictor-corrector.
         
-        U_star = U^n + 0.5 * dt * RHS(U^n)
-        U^{n+1} = U^n + dt * RHS(U_star)
+        U_half = U^n + 0.5 * dt * RHS(U^n)
+        U^{n+1} = U^n + dt * RHS(U_half)
         """
         
-        # --- Predictor step ---
-        # Get RHS based on U^n
-        rhs_n = self.get_rhs(self.U)
+        # Predictor
+        # Get the Godunov update
+        rhs_n = self.get_godunov_update(self.U)
         
-        # Predict U_star at t = n + dt/2
-        # U_star is a cell-centered, half-time-step-evolved state
-        U_star = self.U + 0.5 * dt * rhs_n
+        # Predict U_half at t = n + dt/2
+        # U_half is a cell-centered, half-time-step-evolved state
+        U_half = self.U + 0.5 * dt * rhs_n
         
-        # --- Corrector step ---
-        # Get RHS based on the predicted state U_star
+        # Corrector
+        # Get Godunov update on the predicted state U_half
         # This gives us fluxes at t = n + dt/2
-        rhs_star = self.get_rhs(U_star)
+        rhs_half = self.get_godunov_update(U_half)
         
         # Correct to U^{n+1} using the half-step fluxes
-        U_new = self.U + dt * rhs_star
+        U_new = self.U + dt * rhs_half
         
         return U_new
 
@@ -322,7 +322,6 @@ if __name__ == "__main__":
 
     print("Generating movie...")
     import imageio
-    import imageio_ffmpeg  
 
     with imageio.get_writer(
         'Godunov/godunov_2D_simulation.mp4', 
