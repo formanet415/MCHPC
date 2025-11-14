@@ -131,6 +131,7 @@ class Godunov2D:
         self.t = 0.
 
         self._initial_conditions()
+        self.fignames = []
 
     def _initial_conditions(self):
         """
@@ -177,8 +178,10 @@ class Godunov2D:
         plt.xlabel('x')
         plt.ylabel('y')
         plt.title(f'Density at t={self.t:.2f}')
-        plt.savefig(f'density_t{self.t:.2f}.png', dpi=150, bbox_inches='tight')
+        figname = f'density_t{self.t:.2f}.png'
+        plt.savefig(figname, dpi=150, bbox_inches='tight')
         plt.close()
+        self.fignames.append(figname)
 
     def compute_dt(self, CFL=0.8):
         """
@@ -313,4 +316,25 @@ if __name__ == "__main__":
             
     # Always plot the final state
     sim.plot_density()
+    fignames = sim.fignames
+    
     print("Simulation complete.")
+
+    print("Generating movie...")
+    import imageio
+    import imageio_ffmpeg  
+
+    with imageio.get_writer(
+        'Godunov/godunov_2D_simulation.mp4', 
+        fps=10, 
+        codec='libx264'
+    ) as writer:
+        for filename in fignames:
+            writer.append_data(imageio.imread(filename))
+    print("Movie saved as godunov_2D_simulation.mp4")
+    import os
+    for filename in fignames[:-2]:
+        os.remove(filename)
+    print("Temporary figure files removed.")
+
+    print("Code execution finished.")
