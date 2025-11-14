@@ -87,7 +87,8 @@ def get_W_and_flux(U, gamma, idir):
     W = cons_to_prim(U, gamma)
     rho, u, v, P = W
     E = U[3] 
-    
+    #print(f"max p = {np.max(P):.4f}, idir = {idir}")
+
     F = np.zeros_like(U) # fluxes
     if idir == 0: # x-direction flux
         F[0] = rho * u
@@ -143,13 +144,13 @@ class Godunov2D:
         self.U[...] = U_ambient[:, np.newaxis, np.newaxis]
 
         # left cloud 
-        W_L = np.array([1.0, 1.0, 0.0, 1.0])
+        W_L = np.array([2.5,  2.0, 0.0, 0.01])
         U_L = prim_to_cons(W_L, self.gamma)
         centerL = (2.5, 2.5)
-        radiusL = 1.
+        radiusL = 0.4
 
         # right cloud
-        W_R = np.array([0.125, -1.0, 0.0, 0.1])
+        W_R = np.array([0.5, -1.0, 0.0, 0.01])
         U_R = prim_to_cons(W_R, self.gamma)
         centerR = (7.5, 2.5)
         radiusR = 1.
@@ -177,7 +178,26 @@ class Godunov2D:
         plt.xlabel('x')
         plt.ylabel('y')
         plt.title(f'Density at t={self.t:.2f}')
-        figname = f'density_t{self.t:.2f}.png'
+        figname = f'density_t{self.t:.20f}.png'
+        plt.savefig(figname, dpi=150, bbox_inches='tight')
+        plt.close()
+        self.fignames.append(figname)
+
+    def plot_pressure(self):
+        """
+        Pressure plotter
+        """
+        P = self.W[3, :, :]
+
+        plt.figure(figsize=(12, 6))
+        # Use a reasonable vmin/vmax to handle potential outliers
+        plt.imshow(P.T, extent=(self.xmin, self.xmax, self.ymin, self.ymax), 
+                   origin='lower', cmap='jet', vmin=-0.1, vmax=1.1)
+        plt.colorbar(label='Pressure')
+        plt.xlabel('x')
+        plt.ylabel('y')
+        plt.title(f'Pressure at t={self.t:.2f}')
+        figname = f'pressure_t{self.t:.20f}.png'
         plt.savefig(figname, dpi=150, bbox_inches='tight')
         plt.close()
         self.fignames.append(figname)
@@ -192,7 +212,7 @@ class Godunov2D:
         # Calculate max wave speeds in each direction
         max_speed_x = np.max(np.abs(u) + c)
         max_speed_y = np.max(np.abs(v) + c)
-        
+        # print(f'c={np.max(c):.4f}, max|u|={np.max(np.abs(u)):.4f}, max|v|={np.max(np.abs(v)):.4f}')
         # Calculate dt based on the most restrictive condition
         dt_x = self.dx / max_speed_x
         dt_y = self.dy / max_speed_y
@@ -238,8 +258,25 @@ class Godunov2D:
         Fy = hll_flux(ULy, URy, idir=1, gamma=self.gamma)
         div_Fy = Fy - np.roll(Fy, 1, axis=2)  # This is (G_j+1/2 - G_j-1/2)
         
+        #print("Fx - E", np.max(np.abs(div_Fx[3])))
+        #print("Fy - E", np.max(np.abs(div_Fy[3])))
+
+        #print("Fx - px", np.max(np.abs(div_Fx[2])))
+        #print("Fy - py", np.max(np.abs(div_Fy[2])))
+
+
+
+        #print("div_Eflux x max:", np.max(np.abs(div_Fx[3])))
+        #print("div_Eflux y max:", np.max(np.abs(div_Fy[3])))
+
+        #print("div_pflux x max:", np.max(np.abs(div_Fx[2])))
+        #print("div_pflux y max:", np.max(np.abs(div_Fy[2])))
+
+
         # Total godunov updtate
         godunovupdt = - (div_Fx / self.dx + div_Fy / self.dy)
+
+        #print("Godunov update max E:", np.max(np.abs(godunovupdt[3])))
         
         return godunovupdt
 
@@ -259,7 +296,7 @@ class Godunov2D:
         # Predict U_half at t = n + dt/2
         # U_half is a cell-centered, half-time-step-evolved state
         U_half = self.U + 0.5 * dt * rhs_n
-        
+        # print(f"E_half = {np.max(U_half[3]):.4f}")
         # Corrector
         # Get Godunov update on the predicted state U_half
         # This gives us fluxes at t = n + dt/2
@@ -281,6 +318,19 @@ class Godunov2D:
         
         # Update primitive variables (W) from the new conserved variables (U)
         self.W = cons_to_prim(self.U, self.gamma)
+
+        # check if pressure is negative anywhere
+        P = self.W[3, :, :]
+        if np.any(P < 0):
+            print("Negative pressure encountered!")
+            # set pressure and velocities to 0 where negative
+            mask_neg = P < 0
+            P[mask_neg] = 1e-12
+            self.W[3, :, :] = P
+            self.W[1, :, :][mask_neg] = 0.0
+            self.W[2, :, :][mask_neg] = 0.0
+            self.U = prim_to_cons(self.W, self.gamma)
+
         
 
 if __name__ == "__main__":
@@ -289,7 +339,7 @@ if __name__ == "__main__":
     xmin, xmax = 0.0, 10.0
     ymin, ymax = 0.0, 5.0
     gamma = 1.4
-    final_time = 3.
+    final_time = 5.
     plot_interval = 0.05 # Increased interval for fewer plots
 
     sim = Godunov2D(nx, ny, xmin, xmax, ymin, ymax, gamma)
@@ -299,7 +349,14 @@ if __name__ == "__main__":
     plot_counter = 1
     
     while sim.t < final_time:
-        dt = sim.compute_dt(CFL=0.5) # A CFL of 0.5 is safer
+
+        CFL_timedependent = np.min([0.05 + sim.t/2.,0.6])
+        dt = sim.compute_dt(CFL=CFL_timedependent) # A CFL of 0.5 is safer
+        # sim.plot_density()
+        # sim.plot_pressure()
+        if dt < 1e-6:
+            print("Time step too small, stopping simulation.")
+            # raise RuntimeError("Time step too small.")
         
         # Ensure we don't step over the final time
         if sim.t + dt > final_time:
@@ -324,7 +381,7 @@ if __name__ == "__main__":
     import imageio
 
     with imageio.get_writer(
-        'Godunov/godunov_2D_simulation.mp4', 
+        'Godunov/godunov_2D_simulation_2.mp4', 
         fps=10, 
         codec='libx264'
     ) as writer:
